@@ -240,6 +240,20 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
     };
   }, [mode, streamId, toast]);
   
+  // Auto-join stream when initialStreamId is provided
+  useEffect(() => {
+    if (initialStreamId && mode === "viewer" && socketRef.current && !isStreaming) {
+      // Automatically join the stream
+      socketRef.current.emit("join-stream", { streamId: initialStreamId });
+      setIsStreaming(true);
+      
+      toast({
+        title: "Joining Stream",
+        description: "Connecting to the stream...",
+      });
+    }
+  }, [initialStreamId, mode, isStreaming, toast]);
+
   // Get available media devices
   useEffect(() => {
     async function getDevices() {
@@ -437,7 +451,7 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
   
   return (
     <div className="w-full">
-      <Tabs defaultValue="host" onValueChange={(value) => setMode(value as "host" | "viewer")}>
+      <Tabs defaultValue={initialStreamId ? "viewer" : "host"} onValueChange={(value) => setMode(value as "host" | "viewer")}>
         <TabsList className="grid w-full grid-cols-2 mb-6">
           <TabsTrigger value="host">Host Stream</TabsTrigger>
           <TabsTrigger value="viewer">Join Stream</TabsTrigger>
