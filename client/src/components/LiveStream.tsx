@@ -258,20 +258,75 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
   useEffect(() => {
     async function getDevices() {
       try {
-        // Request permissions first
-        await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        // Try to request permissions with a more permissive approach
+        let mediaStream = null;
+        try {
+          // First try both video and audio
+          mediaStream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: true 
+          });
+        } catch (bothError) {
+          console.warn("Could not access both camera and microphone:", bothError);
+          
+          try {
+            // Try just video
+            mediaStream = await navigator.mediaDevices.getUserMedia({ 
+              video: true, 
+              audio: false 
+            });
+            
+            toast({
+              title: "Limited Access",
+              description: "Camera access granted, but microphone access was denied.",
+            });
+          } catch (videoError) {
+            console.warn("Could not access camera:", videoError);
+            
+            try {
+              // Try just audio
+              mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                video: false, 
+                audio: true 
+              });
+              
+              toast({
+                title: "Limited Access",
+                description: "Microphone access granted, but camera access was denied.",
+              });
+            } catch (audioError) {
+              console.error("Could not access any media devices:", audioError);
+              throw new Error("No media devices could be accessed");
+            }
+          }
+        }
         
+        // Release the temporary stream
+        if (mediaStream) {
+          mediaStream.getTracks().forEach(track => track.stop());
+        }
+        
+        // Now enumerate available devices
         const devices = await navigator.mediaDevices.enumerateDevices();
         
         const videoDevices = devices.filter(device => device.kind === "videoinput");
         const audioDevices = devices.filter(device => device.kind === "audioinput");
+        
+        // Check if we got meaningful device information (with labels)
+        // If not, it often means permissions weren't fully granted
+        const hasVideoLabels = videoDevices.some(device => !!device.label);
+        const hasAudioLabels = audioDevices.some(device => !!device.label);
+        
+        if (!hasVideoLabels && !hasAudioLabels && (videoDevices.length > 0 || audioDevices.length > 0)) {
+          console.warn("Device information available but without labels - permissions may be limited");
+        }
         
         setAvailableDevices({
           videoDevices,
           audioDevices
         });
         
-        // Set default devices
+        // Set default devices if not already set
         if (videoDevices.length > 0 && !selectedVideoDevice) {
           setSelectedVideoDevice(videoDevices[0].deviceId);
         }
@@ -281,9 +336,18 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
         }
       } catch (error) {
         console.error("Error getting media devices:", error);
+        
+        // Show a more informative error message
+        let errorMessage = "Unable to access your camera or microphone.";
+        if ((error as Error).message.includes("Permission denied")) {
+          errorMessage = "Permission denied. Please allow camera and microphone access in your browser settings.";
+        } else if ((error as Error).message.includes("No media devices")) {
+          errorMessage = "No camera or microphone detected. Please connect a device and try again.";
+        }
+        
         toast({
-          title: "Permission Error",
-          description: "Please allow camera and microphone access to use streaming features.",
+          title: "Device Access Error",
+          description: errorMessage,
           variant: "destructive"
         });
       }
@@ -295,18 +359,53 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
   // Start streaming as host
   const startHosting = async () => {
     try {
+      // First check if user media can be accessed
+      try {
+        // Verify media permissions first before creating a stream
+        const testConstraints = {
+          video: videoEnabled,
+          audio: audioEnabled
+        };
+        
+        await navigator.mediaDevices.getUserMedia(testConstraints);
+      } catch (mediaError) {
+        console.error("Media access error:", mediaError);
+        
+        let errorMessage = "Unable to access your camera/microphone.";
+        if ((mediaError as Error).message.includes("Permission denied")) {
+          errorMessage += " Please allow camera and microphone access in your browser settings.";
+        } else {
+          errorMessage += " Please check your device connections or try different settings.";
+        }
+        
+        toast({
+          title: "Permission Error",
+          description: errorMessage,
+          variant: "destructive"
+        });
+        return;
+      }
+      
       // Create a new stream
-      const response = await fetch("/api/streams", {
-        method: "POST",
-      });
-      
-      const data = await response.json();
-      
-      if (data.success) {
+      try {
+        const response = await fetch("/api/streams", {
+          method: "POST",
+        });
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+          throw new Error("Failed to create stream");
+        }
+        
         setStreamId(data.streamId);
         setShareUrl(data.shareUrl);
-        
-        // Get media stream with selected devices
+      } catch (apiError) {
+        throw new Error("Failed to create stream API endpoint: " + (apiError as Error).message);
+      }
+      
+      // Get media stream with selected devices
+      try {
         const constraints = {
           video: videoEnabled ? { deviceId: selectedVideoDevice ? { exact: selectedVideoDevice } : undefined } : false,
           audio: audioEnabled ? { deviceId: selectedAudioDevice ? { exact: selectedAudioDevice } : undefined } : false
@@ -318,22 +417,24 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-        
-        // Join the stream room as host
-        socketRef.current?.emit("host-stream", { streamId: data.streamId });
-        
-        setIsStreaming(true);
-        
-        toast({
-          title: "Stream Started",
-          description: "Your stream has started. Share the link with others to invite them.",
-        });
+      } catch (streamError) {
+        throw new Error("Failed to get media stream: " + (streamError as Error).message);
       }
+      
+      // Join the stream room as host
+      socketRef.current?.emit("host-stream", { streamId: data.streamId });
+      
+      setIsStreaming(true);
+      
+      toast({
+        title: "Stream Started",
+        description: "Your stream has started. Share the link with others to invite them.",
+      });
     } catch (error) {
       console.error("Error starting stream:", error);
       toast({
         title: "Stream Error",
-        description: "Failed to start streaming. Please check your permissions and try again.",
+        description: (error as Error).message || "Failed to start streaming. Please check your permissions and try again.",
         variant: "destructive"
       });
     }
@@ -341,23 +442,41 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
   
   // Join stream as viewer
   const joinStream = () => {
-    if (!streamId) {
+    try {
+      if (!streamId) {
+        toast({
+          title: "Stream ID Required",
+          description: "Please enter a valid stream ID to join.",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      if (!socketRef.current || !socketRef.current.connected) {
+        toast({
+          title: "Connection Error",
+          description: "Unable to connect to the server. Please refresh the page and try again.",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      // Join the stream
+      socketRef.current.emit("join-stream", { streamId });
+      setIsStreaming(true);
+      
       toast({
-        title: "Stream ID Required",
-        description: "Please enter a valid stream ID to join.",
+        title: "Joining Stream",
+        description: "Connecting to the stream...",
+      });
+    } catch (error) {
+      console.error("Error joining stream:", error);
+      toast({
+        title: "Join Error",
+        description: "Failed to join the stream. Please try again.",
         variant: "destructive"
       });
-      return;
     }
-    
-    // Join the stream
-    socketRef.current?.emit("join-stream", { streamId });
-    setIsStreaming(true);
-    
-    toast({
-      title: "Joining Stream",
-      description: "Connecting to the stream...",
-    });
   };
   
   // End streaming or leave stream
