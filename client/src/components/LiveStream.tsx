@@ -87,29 +87,57 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
     const handleViewerJoined = ({ viewerId }: { viewerId: string }) => {
       console.log("New viewer joined:", viewerId);
       if (mode === "host" && localStreamRef.current) {
-        // Create new peer connection for the viewer
-        const peer = new SimplePeer({
-          initiator: true,
-          trickle: false,
-          stream: localStreamRef.current
-        });
-        
-        // Store the peer
-        peersRef.current[viewerId] = peer;
-        
-        // Handle signaling
-        peer.on("signal", (data) => {
-          socketRef.current?.emit("stream-offer", {
-            streamId,
-            description: data,
-            viewerId
+        try {
+          // Create new peer connection for the viewer with STUN servers
+          const peer = new SimplePeer({
+            initiator: true,
+            trickle: true,
+            stream: localStreamRef.current,
+            config: {
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+              ]
+            }
           });
-        });
-        
-        // Handle disconnect
-        peer.on("close", () => {
-          delete peersRef.current[viewerId];
-        });
+          
+          // Store the peer
+          peersRef.current[viewerId] = peer;
+          
+          // Handle signaling
+          peer.on("signal", (data) => {
+            console.log("Host signaling data generated for viewer:", viewerId);
+            socketRef.current?.emit("stream-offer", {
+              streamId,
+              description: data,
+              viewerId
+            });
+          });
+          
+          // Handle disconnect
+          peer.on("close", () => {
+            console.log("Peer connection closed with viewer:", viewerId);
+            delete peersRef.current[viewerId];
+          });
+          
+          // Handle errors
+          peer.on("error", (err) => {
+            console.error("WebRTC error with viewer:", viewerId, err);
+            toast({
+              title: "Connection Error",
+              description: "Failed to establish connection with viewer. Please try again.",
+              variant: "destructive"
+            });
+            delete peersRef.current[viewerId];
+          });
+        } catch (error) {
+          console.error("Error creating host peer connection:", error);
+          toast({
+            title: "Connection Error",
+            description: "Failed to establish streaming connection. Please try again.",
+            variant: "destructive"
+          });
+        }
       }
     };
     
@@ -124,31 +152,72 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
     const handleStreamOffer = ({ hostId, description }: { hostId: string; description: any }) => {
       console.log("Received stream offer from host:", hostId);
       if (mode === "viewer") {
-        // Create new peer connection to accept the offer
-        const peer = new SimplePeer({
-          initiator: false,
-          trickle: false
-        });
-        
-        peersRef.current[hostId] = peer;
-        
-        // Accept the offer
-        peer.signal(description);
-        
-        // Send answer back to host
-        peer.on("signal", (data) => {
-          socketRef.current?.emit("stream-answer", {
-            hostId,
-            description: data
+        try {
+          // Create new peer connection to accept the offer with STUN servers
+          const peer = new SimplePeer({
+            initiator: false,
+            trickle: true,
+            config: {
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+              ]
+            }
           });
-        });
-        
-        // When we get the remote stream
-        peer.on("stream", (stream) => {
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = stream;
-          }
-        });
+          
+          peersRef.current[hostId] = peer;
+          
+          // Accept the offer
+          peer.signal(description);
+          
+          // Send answer back to host
+          peer.on("signal", (data) => {
+            console.log("Viewer signaling data generated for host:", hostId);
+            socketRef.current?.emit("stream-answer", {
+              hostId,
+              description: data
+            });
+          });
+          
+          // When we get the remote stream
+          peer.on("stream", (stream) => {
+            console.log("Received remote stream from host");
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = stream;
+            }
+          });
+          
+          // Handle errors
+          peer.on("error", (err) => {
+            console.error("WebRTC error with host:", hostId, err);
+            toast({
+              title: "Connection Error",
+              description: "Failed to connect to stream. The host may have poor connectivity.",
+              variant: "destructive"
+            });
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = null;
+            }
+            peer.destroy();
+            delete peersRef.current[hostId];
+          });
+          
+          // Handle peer closing
+          peer.on("close", () => {
+            console.log("Peer connection closed with host:", hostId);
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = null;
+            }
+            delete peersRef.current[hostId];
+          });
+        } catch (error) {
+          console.error("Error creating viewer peer connection:", error);
+          toast({
+            title: "Connection Error",
+            description: "Failed to establish connection to stream. Please try again.",
+            variant: "destructive"
+          });
+        }
       }
     };
     
@@ -422,7 +491,7 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
       }
       
       // Join the stream room as host
-      socketRef.current?.emit("host-stream", { streamId: data.streamId });
+      socketRef.current?.emit("host-stream", { streamId });
       
       setIsStreaming(true);
       
