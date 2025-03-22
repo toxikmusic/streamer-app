@@ -2,6 +2,11 @@
 run = "./deploy.sh"
 ignorePorts = false
 
+[deployment.healthCheck]
+path = "/health"
+interval = 5000
+timeout = 1000
+
 [nix]
 channel = "stable-22_11"
 
