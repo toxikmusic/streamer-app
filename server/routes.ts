@@ -14,6 +14,11 @@ const __dirname = path.dirname(__filename);
 const activeStreams = new Map<string, { hostId: string; viewers: Set<string> }>();
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Health check endpoint for deployment
+  app.get("/health", (_req, res) => {
+    res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
+  });
+  
   // Serve static files from a samples directory (if available)
   const samplesDir = path.join(__dirname, "..", "samples");
   if (fs.existsSync(samplesDir)) {
