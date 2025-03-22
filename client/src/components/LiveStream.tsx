@@ -430,19 +430,48 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
     try {
       // First check if user media can be accessed
       try {
-        // Verify media permissions first before creating a stream
-        const testConstraints = {
+        // Try for the combination the user has selected
+        const targetConstraints = {
           video: videoEnabled,
           audio: audioEnabled
         };
         
-        await navigator.mediaDevices.getUserMedia(testConstraints);
+        // Log what we're trying to access
+        console.log("Attempting to access media with constraints:", JSON.stringify(targetConstraints));
+        
+        // Try with a simplified constraint first for better browser compatibility
+        if (videoEnabled && audioEnabled) {
+          try {
+            // First try with simpler constraint structure
+            await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: true
+            });
+            console.log("Successfully accessed both camera and microphone with simple constraints");
+          } catch (simpleError) {
+            console.warn("Could not access with simple constraints, trying exact device IDs:", simpleError);
+            // If that fails, try with specific device IDs
+            await navigator.mediaDevices.getUserMedia({
+              video: selectedVideoDevice ? { deviceId: { exact: selectedVideoDevice } } : true,
+              audio: selectedAudioDevice ? { deviceId: { exact: selectedAudioDevice } } : true
+            });
+            console.log("Successfully accessed both camera and microphone with specific device IDs");
+          }
+        } else {
+          // Just use the target constraints directly for single-media scenarios
+          await navigator.mediaDevices.getUserMedia(targetConstraints);
+          console.log("Successfully accessed media with partial constraints (video or audio only)");
+        }
       } catch (mediaError) {
         console.error("Media access error:", mediaError);
         
         let errorMessage = "Unable to access your camera/microphone.";
         if ((mediaError as Error).message.includes("Permission denied")) {
           errorMessage += " Please allow camera and microphone access in your browser settings.";
+        } else if ((mediaError as Error).message.includes("Could not start video source")) {
+          errorMessage += " Your camera may be in use by another application.";
+        } else if ((mediaError as Error).message.includes("Requested device not found")) {
+          errorMessage += " The selected camera or microphone was not found. Please check your device connections.";
         } else {
           errorMessage += " Please check your device connections or try different settings.";
         }
@@ -480,13 +509,35 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
           audio: audioEnabled ? { deviceId: selectedAudioDevice ? { exact: selectedAudioDevice } : undefined } : false
         };
         
+        console.log("Requesting media with constraints:", constraints);
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log("Media stream obtained successfully");
+        
+        // Log track information
+        stream.getTracks().forEach(track => {
+          console.log(`Track ${track.id}: kind=${track.kind}, enabled=${track.enabled}, muted=${track.muted}`);
+        });
+        
+        // Store the stream reference
         localStreamRef.current = stream;
         
+        // Attach to video element
         if (localVideoRef.current) {
+          console.log("Attaching stream to local video element");
           localVideoRef.current.srcObject = stream;
+          
+          // Ensure playback starts
+          try {
+            await localVideoRef.current.play();
+            console.log("Video playback started");
+          } catch (playError) {
+            console.warn("Auto-play failed, may need user interaction:", playError);
+          }
+        } else {
+          console.warn("Local video element ref is not available");
         }
       } catch (streamError) {
+        console.error("Failed to get media stream:", streamError);
         throw new Error("Failed to get media stream: " + (streamError as Error).message);
       }
       
@@ -718,7 +769,9 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
                       autoPlay 
                       playsInline 
                       muted 
+                      controls={false}
                       className="w-full h-full object-cover"
+                      style={{ transform: 'scaleX(-1)' }} /* Mirror video for better user experience */
                     />
                     
                     <div className="absolute bottom-4 left-0 right-0 flex justify-center space-x-2">
@@ -854,7 +907,18 @@ const LiveStream = ({ initialStreamId }: LiveStreamProps) => {
                       ref={remoteVideoRef} 
                       autoPlay 
                       playsInline 
+                      controls={false}
                       className="w-full h-full object-cover"
+                      onLoadedMetadata={(e) => {
+                        console.log("Remote video metadata loaded");
+                        try {
+                          e.currentTarget.play().catch(err => {
+                            console.warn("Auto-play of remote video failed:", err);
+                          });
+                        } catch (error) {
+                          console.warn("Error playing remote video:", error);
+                        }
+                      }}
                     />
                     
                     <div className="absolute top-2 right-2">
